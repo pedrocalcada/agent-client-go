@@ -3,10 +3,15 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	appconfig "agent-client-go/internal/config"
 	"agent-client-go/internal/llm"
 	"agent-client-go/internal/orchestrator"
+	"agent-client-go/internal/redisclient"
+	"agent-client-go/internal/session"
 	"agent-client-go/internal/sqsclient"
 )
 
@@ -21,13 +26,26 @@ func main() {
 
 	llm.New()
 
+	redisclient.New()
+	defer redisclient.Close()
+
 	sqsClient, err := sqsclient.NewAWSSQS(ctx)
 	if err != nil {
 		log.Fatalf("falha ao criar cliente SQS: %v", err)
 	}
 
-	orch := orchestrator.New(sqsClient)
-	orch.Start(ctx)
+	store := session.NewRedisStore()
+	log.Printf("SessionStore usando Redis em %s", appconfig.RedisAddr())
 
-	select {}
+	orch := orchestrator.New(sqsClient, store)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
+
+	orch.Start(ctx)
+	<-ctx.Done()
 }

@@ -79,3 +79,21 @@ func CallbackListenAddr() string {
 func CallbackBaseURL() string {
 	return GetString("ORCHESTRATOR_CALLBACK_BASE_URL")
 }
+
+// RedisAddr retorna o endereço do Redis para o SessionStore (ex.: "localhost:6379"). Se vazio, usa store em memória.
+func RedisAddr() string {
+	return GetString("REDIS_ADDR")
+}
+
+// RedisPassword retorna a senha do Redis (opcional).
+func RedisPassword() string {
+	return GetString("REDIS_PASSWORD")
+}
+
+// RedisDB retorna o número do DB Redis (0 por padrão).
+func RedisDB() int {
+	if v := globalV; v != nil && v.IsSet("REDIS_DB") {
+		return v.GetInt("REDIS_DB")
+	}
+	return 0
+}

@@ -1,9 +1,8 @@
-package orchestrator
+package session
 
 import (
 	"encoding/json"
 	"strings"
-	"sync"
 
 	"agent-client-go/internal/planner"
 
@@ -32,43 +31,20 @@ func ParseIncomingMessage(body string) (clientID string, text string) {
 	return m.ClientID, msg
 }
 
-// SessionState guarda o estado da conversa de um cliente (identificado por id_cliente).
-type SessionState struct {
+// State guarda o estado da conversa de um cliente (identificado por id_cliente).
+type State struct {
 	SessionID               string                   // id de sessão (criado na primeira mensagem)
 	ClientID                string                   // id_cliente
-	InConversationWithAgent a2a.TaskID               // se não for zero, é o ID da task aguardando resposta do usuário (InputRequired)
+	InConversationWithAgent a2a.TaskID              // se não for zero, é o ID da task aguardando resposta do usuário (InputRequired)
 	TaskItems               []planner.TaskItem       // tarefas do planner (TaskID preenchido quando o agente retorna Working)
 	Tasks                   map[a2a.TaskID]*a2a.Task // key = TaskID retornado pelo agente (Working)
 	OriginalMsg             string                   // mensagem original da primeira interação
 	CurrentMsg              string                   // mensagem atual (primeira interação = OriginalMsg; continuação = resposta do usuário)
 }
 
-// SessionStore mantém o estado das sessões por id_cliente.
-type SessionStore struct {
-	mu       sync.Mutex
-	sessions map[string]*SessionState
-}
-
-func NewSessionStore() *SessionStore {
-	return &SessionStore{sessions: make(map[string]*SessionState)}
-}
-
-func (s *SessionStore) GetOrCreate(clientID string) *SessionState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	state, ok := s.sessions[clientID]
-	if !ok {
-		state = &SessionState{
-			SessionID: clientID,
-			ClientID:  clientID,
-		}
-		s.sessions[clientID] = state
-	}
-	return state
-}
-
-func (s *SessionStore) Get(clientID string) *SessionState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.sessions[clientID]
+// Store define o contrato para armazenar e recuperar estado de sessão (Redis).
+type Store interface {
+	Get(clientID string) (*State, error)
+	Set(clientID string, state *State) error
+	GetOrCreate(clientID string) (*State, error)
 }

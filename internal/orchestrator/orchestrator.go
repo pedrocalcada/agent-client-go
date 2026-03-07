@@ -8,35 +8,33 @@ import (
 	"sort"
 	"strings"
 
+	appconfig "agent-client-go/internal/config"
 	"agent-client-go/internal/llm"
 	"agent-client-go/internal/planner"
+	"agent-client-go/internal/session"
 	"agent-client-go/internal/sqsclient"
-
-	appconfig "agent-client-go/internal/config"
 
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
-// TaskRequest removido: o fluxo usa *SessionState (SessionID, ClientID, TaskItems, Tasks, etc.) no planCh.
-
 type Orchestrator struct {
 	sqs            sqsclient.SQSClient
 	a2aPool        *AgentClientPool
-	sessions       *SessionStore
+	sessions       session.Store
 	callbackServer *CallbackServer
-	planCh         chan *SessionState
+	planCh         chan *session.State
 	resultsCh      chan *a2a.Task
 }
 
-// New cria o orquestrador. callbackListenAddr e callbackBaseURL são obrigatórios (o resultado dos agentes vem sempre via callback).
-func New(sqs sqsclient.SQSClient) *Orchestrator {
+// New cria o orquestrador. O store deve ser session.NewRedisStore() (Redis obrigatório).
+func New(sqs sqsclient.SQSClient, store session.Store) *Orchestrator {
 	o := &Orchestrator{
 		sqs:       sqs,
 		a2aPool:   NewAgentClientPool(appconfig.AgentURLs()),
-		sessions:  NewSessionStore(),
-		planCh:    make(chan *SessionState, 16),
+		sessions:  store,
+		planCh:    make(chan *session.State, 16),
 		resultsCh: make(chan *a2a.Task, 32),
 	}
 	o.callbackServer = NewCallbackServer(func(t *a2a.Task) {
@@ -73,18 +71,23 @@ func (o *Orchestrator) consumeInput(ctx context.Context) {
 		}
 		for _, msg := range resp.Messages {
 			body := aws.ToString(msg.Body)
-			clientID, text := ParseIncomingMessage(body)
+			clientID, text := session.ParseIncomingMessage(body)
 
-			state := o.sessions.GetOrCreate(clientID)
+			state, err := o.sessions.GetOrCreate(clientID)
+			if err != nil {
+				log.Printf("erro ao obter/criar sessão %s: %v", clientID, err)
+				continue
+			}
 			if state.InConversationWithAgent != "" {
 				state.CurrentMsg = text
+				_ = o.sessions.Set(clientID, state)
 			} else {
-				var err error
 				state, err = planFromMessage(ctx, o, text, state)
 				if err != nil {
 					log.Printf("erro ao planejar via LLM: %v", err)
 					continue
 				}
+				_ = o.sessions.Set(clientID, state)
 			}
 			o.planCh <- state
 			if _, err := o.sqs.DeleteMessage(ctx, &sqs.DeleteMessageInput{
@@ -121,37 +124,51 @@ func (o *Orchestrator) run(ctx context.Context) {
 			if err != nil {
 				workingTask = taskFromAgentError(plannedTask, err)
 				state.Tasks[plannedTask.ID] = plannedTask
+				_ = o.sessions.Set(state.ClientID, state)
 				o.resultsCh <- workingTask
 				continue
 			}
 			UpdateTaskFromWorking(plannedTask, workingTask)
 			state.TaskItems[len(state.Tasks)].TaskID = plannedTask.ID
 			state.Tasks[plannedTask.ID] = plannedTask
+			_ = o.sessions.Set(state.ClientID, state)
 
 		case task := <-o.resultsCh:
 
-			state := o.sessions.Get(task.ContextID)
+			state, err := o.sessions.Get(task.ContextID)
+			if err != nil {
+				log.Printf("erro ao obter sessão %s: %v", task.ContextID, err)
+				continue
+			}
+			if state == nil {
+				log.Printf("sessão não encontrada para context_id %s", task.ContextID)
+				continue
+			}
 			UpdateTaskFromWorking(state.Tasks[task.ID], task)
 
 			if task.Status.State == a2a.TaskStateInputRequired {
 				state.InConversationWithAgent = task.ID
+				_ = o.sessions.Set(state.ClientID, state)
 				o.sendResponseToClient(ctx, task.ContextID, textFromTask(task))
 				continue
 			}
 
 			if task.Status.State == a2a.TaskStateCompleted && len(state.Tasks) < len(state.TaskItems) {
 				state.InConversationWithAgent = ""
+				_ = o.sessions.Set(state.ClientID, state)
 				o.planCh <- state
 				continue
 			}
 
 			if task.Status.State == a2a.TaskStateCompleted && len(state.Tasks) == len(state.TaskItems) {
 				state.InConversationWithAgent = ""
+				_ = o.sessions.Set(state.ClientID, state)
 				o.consolidateAndRespond(ctx, state)
 			}
 
 			if task.Status.State == a2a.TaskStateFailed {
 				state.InConversationWithAgent = ""
+				_ = o.sessions.Set(state.ClientID, state)
 				o.consolidateAndRespond(ctx, state)
 			}
 
@@ -175,7 +192,7 @@ func (o *Orchestrator) callAgentA2A(ctx context.Context, task *a2a.Task) (*a2a.T
 	return o.a2aPool.SendToAgent(ctx, task, appconfig.CallbackBaseURL())
 }
 
-func (o *Orchestrator) consolidateAndRespond(ctx context.Context, state *SessionState) {
+func (o *Orchestrator) consolidateAndRespond(ctx context.Context, state *session.State) {
 	var lines []string
 	lines = append(lines, "Resultado das tarefas:")
 	for _, t := range state.Tasks {
@@ -216,7 +233,7 @@ func mustJSON(v any) string {
 	return string(b)
 }
 
-func planFromMessage(ctx context.Context, o *Orchestrator, message string, state *SessionState) (*SessionState, error) {
+func planFromMessage(ctx context.Context, o *Orchestrator, message string, state *session.State) (*session.State, error) {
 	message = strings.TrimSpace(message)
 	agentNames := o.a2aPool.getAgentNames()
 	systemPrompt := planner.BuildSystemPrompt(agentNames)
@@ -231,7 +248,7 @@ func planFromMessage(ctx context.Context, o *Orchestrator, message string, state
 	return buildSessionState(message, tasks, state)
 }
 
-func buildSessionState(originalMsg string, tasks []planner.TaskItem, state *SessionState) (*SessionState, error) {
+func buildSessionState(originalMsg string, tasks []planner.TaskItem, state *session.State) (*session.State, error) {
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].Order < tasks[j].Order })
 	state.OriginalMsg = originalMsg
 	state.CurrentMsg = originalMsg

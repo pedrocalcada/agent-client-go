@@ -19,3 +19,8 @@ agent_urls:
 # Endpoint para o agente devolver a resposta (request/reply). Se definido, o orquestrador sobe um HTTP server e informa essa URL ao agente nos metadados (callback_url).
 ORCHESTRATOR_CALLBACK_LISTEN: ":8080"
 ORCHESTRATOR_CALLBACK_BASE_URL: "http://localhost:8080/a2a/callback"
+
+# Redis para persistir estado das sessões (TaskStore). Se não definido, usa memória.
+# REDIS_ADDR: "localhost:6379"
+# REDIS_PASSWORD: ""
+# REDIS_DB: 0
