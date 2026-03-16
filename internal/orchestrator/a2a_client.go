@@ -1,12 +1,11 @@
 package orchestrator
 
 import (
+	appconfig "agent-client-go/internal/config"
 	"context"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
-	"sync"
 
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2aclient"
@@ -16,50 +15,46 @@ import (
 // AgentClientPool mantém clientes A2A por agente (resolvidos via AgentCard) e envia
 // mensagens usando os campos do protocolo (contextId, state, etc.).
 type AgentClientPool struct {
-	agentURLs map[string]string // nome do agente -> URL base do AgentCard
-	resolver  *agentcard.Resolver
-	clients   map[string]*a2aclient.Client
-	mu        sync.Mutex
+	agentCards map[string]*a2a.AgentCard
+	clients    map[string]*a2aclient.Client
 }
 
 // NewAgentClientPool cria um pool que resolve AgentCard a partir das URLs configuradas.
 func NewAgentClientPool(agentURLs map[string]string) *AgentClientPool {
-	if agentURLs == nil {
-		agentURLs = make(map[string]string)
+	pool := &AgentClientPool{
+		agentCards: make(map[string]*a2a.AgentCard),
+		clients:    make(map[string]*a2aclient.Client),
 	}
-	return &AgentClientPool{
-		agentURLs: agentURLs,
-		resolver:  agentcard.DefaultResolver,
-		clients:   make(map[string]*a2aclient.Client),
+
+	// Descoberta inicial dos agentes (AgentCard) na subida da aplicação.
+	for name, baseURL := range agentURLs {
+		baseURL = strings.TrimSpace(baseURL)
+
+		card, err := agentcard.DefaultResolver.Resolve(context.Background(), baseURL)
+		if err != nil {
+			log.Printf("falha ao resolver AgentCard na inicialização para %s (%s): %v", name, baseURL, err)
+			continue
+		}
+		pool.agentCards[card.Name] = card
+
 	}
+
+	return pool
 }
 
-// getAgentNames retorna os nomes dos agentes configurados (ordenados), para uso no planner.
-func (p *AgentClientPool) getAgentNames() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	names := make([]string, 0, len(p.agentURLs))
-	for name := range p.agentURLs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+func (p *AgentClientPool) GetPlannerAgents() map[string]*a2a.AgentCard {
+	return p.agentCards
 }
+
 func (p *AgentClientPool) getClient(ctx context.Context, agentName string) (*a2aclient.Client, error) {
-	baseURL, ok := p.agentURLs[agentName]
-	if !ok || baseURL == "" {
-		return nil, fmt.Errorf("agente %q não possui URL A2A configurada", agentName)
-	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	if c, ok := p.clients[agentName]; ok {
 		return c, nil
 	}
 
-	card, err := p.resolver.Resolve(ctx, baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("resolver AgentCard para %s: %w", agentName, err)
+	card, ok := p.agentCards[agentName]
+	if !ok || card == nil {
+		return nil, fmt.Errorf("AgentCard não resolvido para agente %q (verifique discovery na inicialização)", agentName)
 	}
 
 	client, err := a2aclient.NewFromCard(ctx, card)
@@ -73,27 +68,14 @@ func (p *AgentClientPool) getClient(ctx context.Context, agentName string) (*a2a
 
 // SendToAgent envia a tarefa ao agente. callbackURL é obrigatório; o agente responde Working e envia o resultado no callback.
 // Em sucesso retorna a Task em estado Working para o orquestrador atualizar a task do planner.
-func (p *AgentClientPool) SendToAgent(ctx context.Context, task *a2a.Task, callbackURL string) (*a2a.Task, error) {
-	if callbackURL == "" {
-		return nil, fmt.Errorf("callbackURL é obrigatório")
-	}
+func (p *AgentClientPool) SendToAgent(ctx context.Context, task *a2a.Task, messageText string) (*a2a.Task, error) {
+
 	agentName := AgentFromTask(task)
-	messageText := MessageTextFromPlannedTask(task)
 	log.Printf("A2A: enviando para %s tarefa %s (context %s): %s", agentName, task.ID, task.ContextID, messageText)
 
-	var msg *a2a.Message
-	if task.Status.State == a2a.TaskStateSubmitted {
-		msg = a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: messageText})
-	} else {
-		msg = a2a.NewMessageForTask(a2a.MessageRoleUser, task, a2a.TextPart{Text: messageText})
-	}
-	if msg.Metadata == nil {
-		msg.Metadata = make(map[string]any)
-	}
+	msg := a2a.NewMessageForTask(a2a.MessageRoleUser, task, a2a.TextPart{Text: messageText})
 
-	msg.ContextID = task.ContextID
-	msg.Metadata["requestId"] = task.ContextID
-	msg.Metadata["callback_url"] = callbackURL
+	msg.SetMeta("callback_url", appconfig.GetString("ORCHESTRATOR_CALLBACK_BASE_URL"))
 
 	client, err := p.getClient(ctx, agentName)
 	if err != nil {

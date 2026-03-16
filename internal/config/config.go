@@ -25,8 +25,8 @@ func LoadConfig() (*viper.Viper, error) {
 	if v.GetString("SQS_INPUT_QUEUE_URL") == "" || v.GetString("SQS_OUTPUT_QUEUE_URL") == "" {
 		return nil, errors.New("defina SQS_INPUT_QUEUE_URL e SQS_OUTPUT_QUEUE_URL no config.yaml")
 	}
-	if v.GetString("LLM_API_URL") == "" {
-		return nil, errors.New("defina LLM_API_URL no config.yaml (endpoint HTTP da API do modelo)")
+	if !v.GetBool("LLM_USE_OPENAI_SDK") && v.GetString("LLM_API_URL") == "" {
+		return nil, errors.New("defina LLM_API_URL no config.yaml (endpoint HTTP da API do modelo) ou use LLM_USE_OPENAI_SDK: true para o SDK OpenAI")
 	}
 
 	globalV = v
@@ -39,6 +39,14 @@ func GetString(key string) string {
 		return ""
 	}
 	return globalV.GetString(key)
+}
+
+// GetBool retorna o valor bool da chave de configuração. Pode ser chamado de qualquer lugar após LoadConfig().
+func GetBool(key string) bool {
+	if globalV == nil {
+		return false
+	}
+	return globalV.GetBool(key)
 }
 
 // GetStringMapString retorna o mapa string->string da chave. Útil para configs como agent_urls.

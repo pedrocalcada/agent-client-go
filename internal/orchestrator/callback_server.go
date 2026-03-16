@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	appconfig "agent-client-go/internal/config"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -28,6 +29,9 @@ func NewCallbackServer(submit func(*a2a.Task)) *CallbackServer {
 
 // Start inicia o servidor HTTP em background. Retorna assim que o listener está ativo.
 func (s *CallbackServer) Start() error {
+	if appconfig.GetString("ORCHESTRATOR_CALLBACK_BASE_URL") == "" {
+		return errors.New("ORCHESTRATOR_CALLBACK_BASE_URL não definido no config.yaml")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/a2a/callback", s.handleCallback)
 	s.mu.Lock()

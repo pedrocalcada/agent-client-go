@@ -1,32 +1,48 @@
 package planner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/a2aproject/a2a-go/a2a"
 )
 
-// BuildSystemPrompt monta o prompt do planejador com a lista de agentes configurados (ex.: config.yaml agent_urls).
-func BuildSystemPrompt(agentNames []string) string {
-	names := make([]string, len(agentNames))
-	copy(names, agentNames)
-	sort.Strings(names)
+// AgentInfo descreve um agente disponível para o planner.
+// É construído a partir do AgentCard resolvido pelos clientes A2A.
+type AgentInfo struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Skills      []string `json:"skills,omitempty"`
+}
+
+// BuildSystemPrompt monta o prompt do planejador com a lista de agentes e seus detalhes (ex.: descrição e skills).
+func BuildSystemPrompt(agents map[string]*a2a.AgentCard) string {
 
 	var agentsLine string
-	if len(names) == 0 {
-		agentsLine = "Nenhum agente configurado. Use \"agente-nao-definido\" para qualquer tarefa."
-	} else {
-		lines := make([]string, len(names))
-		for i, n := range names {
-			lines[i] = "- " + n
-		}
-		agentsLine = "Agentes disponíveis (use exatamente um destes nomes no campo agent):\n" + strings.Join(lines, "\n")
-	}
 
-	return `Você é um planejador de tarefas. Dada a mensagem do usuário, quebre em UMA tarefa por ação, na ordem em que aparecem.
+	var lines []string
+	for _, card := range agents {
+		var b strings.Builder
+		fmt.Fprintf(&b, "- %s", card.Name)
+		if strings.TrimSpace(card.Description) != "" {
+			fmt.Fprintf(&b, " — descrição: %s", strings.TrimSpace(card.Description))
+		}
+		if len(card.Skills) > 0 {
+			fmt.Fprintf(&b, "\n  Skills principais:")
+			for _, s := range card.Skills {
+				if strings.TrimSpace(s.Description) == "" {
+					continue
+				}
+				fmt.Fprintf(&b, "\n    - %s", strings.TrimSpace(s.Description))
+			}
+		}
+		lines = append(lines, b.String())
+	}
+	agentsLine = "Agentes disponíveis (use exatamente um destes nomes no campo agent, escolhendo o mais adequado pela descrição e skills):\n" + strings.Join(lines, "\n")
+
+	return `Você é um planejador de tarefas. Dada a mensagem do usuário, quebre em UMA tarefa por ação, na ordem em que aparecem. Garanta que todas as intenções do usuário sejam atendidas.
 
 Regra importante: cada ação distinta vira uma tarefa, mesmo que seja o mesmo assunto. Exemplos:
 - "fazer pix para minha mãe e pix para meu irmão" = 2 tarefas (duas mensagens para agente-pagamentos).
@@ -40,6 +56,14 @@ Responda SOMENTE com um JSON neste formato (sem texto antes ou depois):
 {"tasks": [{"order": 1, "agent": "nome-do-agente", "message": "mensagem para o agente"}, ...]}`
 }
 
+func BuildSystemPromptForConsolidation(lines []string) string {
+	return `Você é um planejador de tarefas e executou todas elas e teve essa troca de mensagens com o usuário.
+
+` + strings.Join(lines, "\n") + `
+
+Resuma com um texto amigável para o usuário. o que foi feito e o que não foi feito.`
+}
+
 // TaskItem representa uma tarefa retornada pelo planner.
 type TaskItem struct {
 	Order   int        `json:"order"`
@@ -49,7 +73,7 @@ type TaskItem struct {
 }
 
 // ParseResponse extrai o JSON de tasks do conteúdo retornado pelo modelo (ex.: texto com ```json...```).
-func ParseResponse(content string) ([]TaskItem, error) {
+func ParseResponse(ctx context.Context, sessionID string, content string) ([]TaskItem, error) {
 	content = strings.TrimSpace(content)
 	if i := strings.Index(content, "{"); i >= 0 {
 		content = content[i:]

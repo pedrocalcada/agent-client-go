@@ -5,15 +5,19 @@ SQS_OUTPUT_QUEUE_URL: "https://sqs.us-east-1.amazonaws.com/339713071347/teste-sa
 SQS_MAX_MESSAGES: 5
 SQS_WAIT_SECONDS: 2
 WORKER_COUNT: 1
+# LLM: use LLM_USE_OPENAI_SDK: true para usar o SDK oficial OpenAI (github.com/openai/openai-go).
+# Com true, define OPENAI_API_KEY (aqui ou em env) e LLM_MODEL (ex.: gpt-4o). LLM_API_URL é ignorado.
+LLM_USE_OPENAI_SDK: true
 LLM_API_URL: "http://localhost:11434/api/chat"
 LLM_MODEL: "deepseek-r1"
+OPENAI_MODEL: "gpt-4o"
 
 # URLs base dos agentes A2A (AgentCard em /.well-known/agent-card.json).
 # O orquestrador usa o protocolo A2A para falar com cada agente.
 agent_urls:
-  agente-investimento: "http://localhost:9001"
-  agente-pagamentos: "http://localhost:9002"
-  agente-cartoes: "http://localhost:9003"
+  agente-investimentos: "http://localhost:9001"
+  # agente-pagamentos: "http://localhost:9002"
+  # agente-cartoes: "http://localhost:9003"
 #   agente-geral: "http://localhost:9003"
 
 # Endpoint para o agente devolver a resposta (request/reply). Se definido, o orquestrador sobe um HTTP server e informa essa URL ao agente nos metadados (callback_url).
@@ -21,6 +25,6 @@ ORCHESTRATOR_CALLBACK_LISTEN: ":8080"
 ORCHESTRATOR_CALLBACK_BASE_URL: "http://localhost:8080/a2a/callback"
 
 # Redis para persistir estado das sessões (TaskStore). Se não definido, usa memória.
-# REDIS_ADDR: "localhost:6379"
-# REDIS_PASSWORD: ""
-# REDIS_DB: 0
+REDIS_ADDR: "localhost:6379"
+REDIS_PASSWORD: ""
+REDIS_DB: 0
